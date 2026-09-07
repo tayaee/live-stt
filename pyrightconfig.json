@@ -1,0 +1,8 @@
+{
+  "extraPaths": ["src"],
+  "reportOptionalMemberAccess": "none",
+  "reportMissingImports": "none",
+  "reportUnusedVariable": "none",
+  "reportUnusedParameter": "none",
+  "reportUnusedLambdaParameter": "none"
+}
