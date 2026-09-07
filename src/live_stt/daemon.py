@@ -69,7 +69,17 @@ class Daemon:
         self.is_listening = False
         self.transcriber: Optional["LiveTranscriber"] = None
         self.rewriter: Optional["Rewriter"] = None  # lazy
-        self._live_interim = False  # 이전 응답이 interim 이었는지
+
+        # 위쪽 버퍼 실시간 누적 관리
+        self._committed_texts: list[str] = []
+        self._current_interim: str = ""
+
+        # 침묵 감지 자동 재작성 (틈틈이 rewrite) 관리
+        self._last_rewritten_raw: str = ""
+        self._last_rewritten_clean: str = ""
+        self._rewrite_timer: Optional[threading.Timer] = None
+        self._rewrite_lock = threading.Lock()
+        self._is_rewriting: bool = False
 
         self.ui.set_quit_callback(self._shutdown)
 
@@ -94,6 +104,7 @@ class Daemon:
 
     def _shutdown(self) -> None:
         """데몬 종료."""
+        self._cancel_rewrite_timer()
         try:
             self.trigger.uninstall()
         except Exception:
@@ -125,29 +136,104 @@ class Daemon:
         # mainloop 안에서 호출되지만 안전을 위해 schedule
         self.ui.schedule(self._toggle_listening)
 
-    def _on_live_text(self, text: str) -> None:
-        """Gemini Live 텍스트 도착 (LiveTranscriber 전용 스레드).
+    def _get_current_raw_text(self) -> str:
+        """확정된 문장들 + 현재 발화 중인 interim 문장을 합친 전체 텍스트 반환."""
+        parts = list(self._committed_texts)
+        if self._current_interim.strip():
+            parts.append(self._current_interim.strip())
+        return "\n".join(parts)
 
-        interim 인 경우 UI 의 raw 버퍼 전체 교체 (모델이 best-guess 를
-        계속 갱신). final 인 경우 newline 과 함께 append (lock-in).
-        """
-        logger.info(
-            "_on_live_text: %r (interim_flag=%s)", text, self._live_interim
-        )
+    def _on_live_text(self, text: str) -> None:
+        """Gemini Live 확정 텍스트 도착 (final input_transcription)."""
+        logger.info("_on_live_text (final): %r", text)
         if not text:
             return
-        if getattr(self, "_live_interim", False):
-            # interim: 버퍼 OVERWRITE
-            self.ui.schedule(self.ui.set_raw, text)
-        else:
-            # final: newline 으로 lock-in
-            self.ui.schedule(self.ui.append_raw, text + "\n")
+        # 문장 확정 -> 누적 리스트에 영구 보존
+        self._committed_texts.append(text.strip())
+        self._current_interim = ""
+        full_text = self._get_current_raw_text()
+        self.ui.schedule(self.ui.set_raw, full_text)
+
+        # 한 문장 발화가 끝났으므로 침묵 딜레이 타이머 가동
+        self._reset_rewrite_timer()
 
     def _on_live_interim(self, text: str) -> None:
-        """interim transcription (저지연 부분 결과) → flag ON."""
+        """interim transcription (저지연 부분 결과)."""
         logger.info("_on_live_interim: %r", text)
-        self._live_interim = True
-        self.ui.schedule(self.ui.set_raw, text)
+        self._current_interim = text
+        full_text = self._get_current_raw_text()
+        self.ui.schedule(self.ui.set_raw, full_text)
+
+        # 사용자가 계속 말하는 중이므로 침묵 딜레이 타이머 리셋
+        self._reset_rewrite_timer()
+
+    # ── 침묵 딜레이 자동 재작성 (틈틈이 rewrite) ─
+    def _reset_rewrite_timer(self) -> None:
+        """발화 중단(침묵) 감지 타이머 재설정."""
+        if not self.is_listening:
+            return
+        if self._rewrite_timer is not None:
+            self._rewrite_timer.cancel()
+        self._rewrite_timer = threading.Timer(
+            config.SILENCE_REWRITE_DELAY_SEC,
+            self._on_silence_delay,
+        )
+        self._rewrite_timer.daemon = True
+        self._rewrite_timer.start()
+
+    def _cancel_rewrite_timer(self) -> None:
+        """침묵 타이머 취소."""
+        if self._rewrite_timer is not None:
+            self._rewrite_timer.cancel()
+            self._rewrite_timer = None
+
+    def _on_silence_delay(self) -> None:
+        """발화 후 일정 시간(침묵) 경과 시 위쪽 전체 텍스트를 Gemma로 재작성."""
+        if not self.is_listening:
+            return
+        raw_all = self._get_current_raw_text().strip()
+        if not raw_all:
+            return
+        # 이미 이전에 재작성된 내용과 같거나, 현재 재작성 중이면 스킵
+        if raw_all == self._last_rewritten_raw or self._is_rewriting:
+            return
+
+        logger.info(
+            "Silence detected (%.1fs) -> Triggering periodic Gemma rewrite (%d chars)",
+            config.SILENCE_REWRITE_DELAY_SEC,
+            len(raw_all),
+        )
+        threading.Thread(
+            target=self._run_periodic_rewrite,
+            args=(raw_all,),
+            daemon=True,
+            name="GemmaPeriodicRewrite",
+        ).start()
+
+    def _run_periodic_rewrite(self, raw_text: str) -> None:
+        """백그라운드에서 위 텍스트 전체를 Gemma에게 보내 아래 버퍼 갱신."""
+        with self._rewrite_lock:
+            if raw_text == self._last_rewritten_raw:
+                return
+            self._is_rewriting = True
+        try:
+            self.ui.schedule(self.ui.set_status, "✍️ Gemma 틈틈이 재작성 중...")
+            from .rewrite import Rewriter  # lazy
+            if self.rewriter is None:
+                self.rewriter = Rewriter()
+
+            rewritten = self.rewriter.rewrite(raw_text)
+            if rewritten:
+                self._last_rewritten_clean = rewritten
+                self._last_rewritten_raw = raw_text
+                self.ui.schedule(self.ui.set_clean, rewritten)
+                logger.info("Periodic Gemma rewrite completed (%d chars)", len(rewritten))
+        except Exception as e:
+            logger.warning("Periodic Gemma rewrite failed: %s", e)
+        finally:
+            self._is_rewriting = False
+            if self.is_listening:
+                self.ui.schedule(self.ui.set_status, "🔴 받아쓰기 진행 중")
 
     # ── 메인 로직 (메인 스레드에서 실행) ─
     def _toggle_listening(self) -> None:
@@ -163,14 +249,18 @@ class Daemon:
             self.ui.set_status("⚠ 활성 윈도우 캡처 실패")
             return
 
+        self._committed_texts.clear()
+        self._current_interim = ""
+        self._last_rewritten_raw = ""
+        self._last_rewritten_clean = ""
+        self._cancel_rewrite_timer()
+
         self.ui.clear_raw()
+        self.ui.clear_clean()
         self.audio.start()
         self.is_listening = True
         self.ui.set_status("🔴 받아쓰기 진행 중")
 
-        # LiveTranscriber는 자체 스레드/루프에서 동작.
-        # Lazy import: live.py → google.genai → cffi (이 시점에 처음 로드됨).
-        # 이미 tkinter mainloop는 통과한 상태이므로 안전.
         def _init_session() -> None:
             logger.info("_init_session thread start")
             try:
@@ -180,16 +270,14 @@ class Daemon:
                     on_interim=self._on_live_interim,
                 )
                 logger.info("LiveTranscriber created, calling start()...")
-                tr.start(ready_timeout=10.0)  # 동기: ready 이벤트까지 대기
+                tr.start(ready_timeout=10.0)
                 logger.info("LiveTranscriber ready (session open)")
                 self.transcriber = tr
-                self._live_interim = False
-            except BaseException as e:  # 넓게 잡아 데몬은 살려둠
+            except BaseException as e:
                 logger.exception("[Live Error] %s: %s", type(e).__name__, e)
                 self.ui.schedule(
                     self.ui.set_status, f"⚠ Gemini Live 실패: {type(e).__name__}"
                 )
-                # 실패 시 상태 복구
                 try:
                     self.audio.stop()
                 except Exception:
@@ -204,6 +292,7 @@ class Daemon:
             return
 
         self.is_listening = False
+        self._cancel_rewrite_timer()
 
         # 1) 마이크 정리 (오디오 입력 즉시 중단)
         try:
@@ -211,7 +300,7 @@ class Daemon:
         except Exception:
             pass
 
-        # 2) Gemini Live 종료 (전용 스레드의 루프 정리)
+        # 2) Gemini Live 종료
         if self.transcriber:
             logger.info("transcriber.stop()")
             try:
@@ -220,50 +309,78 @@ class Daemon:
                 pass
         self.transcriber = None
 
-        # 3) 지금까지 받아써진 텍스트 가져오기
-        raw = self.ui.get_raw().strip()
-        logger.info("dictation stopped, transcribed raw text: %r", raw)
+        # 3) 잔여 발화가 있으면 commit 처리
+        if self._current_interim.strip():
+            self._committed_texts.append(self._current_interim.strip())
+            self._current_interim = ""
 
-        if not raw:
+        # 4) 지금까지 받아써진 전체 텍스트 확정
+        raw_all = self._get_current_raw_text().strip()
+        self.ui.schedule(self.ui.set_raw, raw_all)
+        logger.info("dictation stopped, total transcribed raw text: %r", raw_all)
+
+        if not raw_all:
             self.ui.set_status("⏹️ 받아쓰기 종료 — 대기 중 (인식된 텍스트 없음)")
             return
 
-        # 4) 이미 받아쓴 텍스트를 Gemma에 전달하여 재작성 후 타겟 창에 자동 입력
-        self.ui.set_status("✍️ Gemma 재작성 중...")
-        target_app = self.target
+        # 5) 이미 틈틈이 rewrite된 결과가 최신 raw_all과 일치하면 즉시 Paste!
+        if raw_all == self._last_rewritten_raw and self._last_rewritten_clean:
+            logger.info(
+                "Already rewritten by periodic task, pasting immediately (%d chars)",
+                len(self._last_rewritten_clean),
+            )
+            self._paste_text(self._last_rewritten_clean)
+            return
 
-        def _rewrite_and_paste() -> None:
+        # 6) 최신 내용이 아직 rewrite되지 않은 경우 -> 최종 rewrite 후 Paste
+        self.ui.set_status("✍️ Gemma 최종 재작성 중...")
+
+        def _final_rewrite_and_paste() -> None:
+            # 진행 중인 periodic rewrite 작업이 있다면 완료 대기
+            while self._is_rewriting:
+                import time
+                time.sleep(0.1)
+
+            # 대기 완료 후 이미 갱신되었는지 확인
+            if raw_all == self._last_rewritten_raw and self._last_rewritten_clean:
+                self._paste_text(self._last_rewritten_clean)
+                return
+
             try:
                 from .rewrite import Rewriter  # lazy
                 if self.rewriter is None:
                     self.rewriter = Rewriter()
 
-                clean_tail = self.ui.get_clean_tail(config.REWRITE_CONTEXT_TAIL)
                 logger.info(
-                    "Sending transcribed text (%d chars) to Gemma (%s) for rewrite",
-                    len(raw),
-                    config.GEMINI_REWRITE_MODEL,
+                    "Sending total transcribed text (%d chars) to Gemma for final rewrite",
+                    len(raw_all),
                 )
-                rewritten = self.rewriter.rewrite(raw, clean_tail)
+                rewritten = self.rewriter.rewrite(raw_all)
 
                 if rewritten:
-                    self.ui.schedule(self.ui.append_clean, rewritten)
-                    if target_app.is_valid():
-                        self.ui.schedule(self.ui.set_status, "📤 Paste 중...")
-                        target_app.restore_focus()
-                        clear_ime(target_app.hwnd)
-                        send_text(rewritten)
-                        self.ui.schedule(self.ui.set_status, "✅ 완료 — 대기 중")
-                        logger.info("Paste completed: %r", rewritten)
-                    else:
-                        self.ui.schedule(self.ui.set_status, "✅ 재작성 완료 (타겟 윈도우 없음) — 대기 중")
+                    self._last_rewritten_clean = rewritten
+                    self._last_rewritten_raw = raw_all
+                    self.ui.schedule(self.ui.set_clean, rewritten)
+                    self._paste_text(rewritten)
                 else:
                     self.ui.schedule(self.ui.set_status, "⚠ 재작성 결과 비어있음 — 대기 중")
             except Exception as e:
-                logger.exception("[Rewrite Error] %s", e)
+                logger.exception("[Final Rewrite Error] %s", e)
                 self.ui.schedule(self.ui.set_status, f"⚠ 재작성 실패: {e}")
 
-        threading.Thread(target=_rewrite_and_paste, daemon=True, name="GemmaRewrite").start()
+        threading.Thread(target=_final_rewrite_and_paste, daemon=True, name="GemmaFinalRewrite").start()
+
+    def _paste_text(self, text: str) -> None:
+        """타겟 애플리케이션 창으로 텍스트 자동 붙여넣기."""
+        if self.target.is_valid():
+            self.ui.schedule(self.ui.set_status, "📤 Paste 중...")
+            self.target.restore_focus()
+            clear_ime(self.target.hwnd)
+            send_text(text)
+            self.ui.schedule(self.ui.set_status, "✅ 완료 — 대기 중")
+            logger.info("Paste completed: %r", text)
+        else:
+            self.ui.schedule(self.ui.set_status, "✅ 재작성 완료 (타겟 윈도우 없음) — 대기 중")
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

@@ -106,6 +106,18 @@ Windows 백그라운드 음성 받아쓰기 데몬. **Right Ctrl** 1회 = 받아
   - UI 라벨 / 상태 메시지 / docstring / README / handoff 모두 일괄 갱신
 - **영향**: Right Shift (재작성), Ctrl+Z (취소), Esc/종료 버튼은 변경 없음
 
+### 라운드 12 — 실시간 문장 누적 + 침묵 딜레이 틈틈이 재작성 + API 키 Failover
+- **이유**:
+  1. 여러 문장을 pause 두고 발화 시 이전 문장이 지워지는 버그 해결 (위쪽 창은 모든 발화 누적 기록)
+  2. 얼마 간의 딜레이(1.5초 침묵) 감지 시 위 텍스트 전체를 Gemma로 보내 틈틈이 아래 버퍼 재작성 갱신
+  3. 22개 API 키 풀을 활용한 multi-key failover retry (503/429 발생 시 다음 키로 자동 재시도)
+- **변경**:
+  - `daemon.py`: `_committed_texts` 누적 리스트 및 `_current_interim` 실시간 렌더링 분리
+  - `daemon.py`: `threading.Timer` 기반 `SILENCE_REWRITE_DELAY_SEC` (1.5초) 침묵 감지 자동 재작성 스케줄러 구현
+  - `ui.py`: `set_clean(text)`, `clear_clean()` 추가
+  - `rewrite.py`: 키 풀에서 최대 5개 키를 순환하며 503/429/네트워크 에러 시 즉시 다음 키로 failover 재시도 로직 구현
+  - `config.py`: `SILENCE_REWRITE_DELAY_SEC = 1.5` 추가
+
 ---
 
 ## 4. 최종 디자인

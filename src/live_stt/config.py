@@ -18,6 +18,9 @@ INT16_MAX = 32768.0  # 게이지 정규화용 (실제로는 signed 16-bit 최대
 # 재작성 컨텍스트: 아래쪽(clean) 버퍼 마지막 N자를 Gemini에 함께 전송
 REWRITE_CONTEXT_TAIL = 500
 
+# 발화 중단(침묵) 감지 후 Gemma 자동 재작성까지의 딜레이(초)
+SILENCE_REWRITE_DELAY_SEC = 1.5
+
 # 키 코드 (Right Ctrl)
 VK_RCONTROL = 0xA3
 

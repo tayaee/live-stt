@@ -246,6 +246,18 @@ class MainWindow:
     def get_raw(self) -> str:
         return self.raw_edit.toPlainText().rstrip("\n")
 
+    def clear_clean(self) -> None:
+        self.clean_edit.clear()
+
+    def set_clean(self, text: str) -> None:
+        """clean 버퍼 전체 교체. Gemma 틈틈이 재작성 결과 갱신용."""
+        logger.info("set_clean: %r", text)
+        self.clean_edit.setPlainText(text)
+        cursor = self.clean_edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.clean_edit.setTextCursor(cursor)
+        self.clean_edit.ensureCursorVisible()
+
     def append_clean(self, text: str) -> None:
         self.clean_edit.appendPlainText(text.rstrip())
 
