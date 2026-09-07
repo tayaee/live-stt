@@ -28,6 +28,7 @@ foreign-thread-close 버그 경로를 우회.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from typing import Callable, Optional
 
@@ -37,6 +38,8 @@ from google.genai.types import HttpOptions
 
 from .config import GEMINI_LIVE_MODEL, SAMPLE_RATE
 from .keypool import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 class LiveTranscriber:
@@ -102,7 +105,7 @@ class LiveTranscriber:
         self._loop = None
 
     async def _cleanup(self) -> None:
-        """Finalize 스트림 신호 → running=False."""
+        """Finalize 스트림 신호 → tasks cancel → running=False."""
         if not self._running and self.session is None:
             return
         # 1) finalize: audio 끝났음을 서버에 알려 최종 transcript 가 도착하게 함
@@ -111,24 +114,41 @@ class LiveTranscriber:
                 await self.session.send_realtime_input(audio_stream_end=True)
             except Exception:
                 pass
-        # 2) running flag — _setup_and_run 의 while 루프 종료
+        # 2) 모델이 finalize 후 final transcript 를 보내는 시간 확보.
+        #    매우 짧은 발음(예: 0.5~1초)에서는 모델이 finalize 전에 응답을
+        #    emit 하기 어려워 final 0개 → 2초 정도 기다림.
+        await asyncio.sleep(2.0)
+        # 3) 송수신 태스크 명시적 cancel — 그렇지 않으면 루프 종료 시
+        #    "Task was destroyed but it is pending!" 경고 발생.
+        for task_attr in ("_send_task", "_recv_task"):
+            task: Optional[asyncio.Task] = getattr(self, task_attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+        self._send_task = None
+        self._recv_task = None
+        # 4) running flag — _setup_and_run 의 while 루프 종료
         self._running = False
-        # 3) 송수신 태스크는 cooperative cancellation 으로 종료
-        #    세션 close 는 _setup_and_run.finally 의 cm.__aexit__ 가 처리
+        # 5) 세션 close 는 _setup_and_run.finally 의 cm.__aexit__ 가 처리
 
     def _thread_main(self) -> None:
         """전용 스레드 entrypoint."""
-        print(f"[live] thread starting (model={GEMINI_LIVE_MODEL})", flush=True)
+        logger.info("thread starting (model=%s)", GEMINI_LIVE_MODEL)
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._setup_and_run())
         except BaseException as e:
-            print(f"[live] thread crashed: {type(e).__name__}: {e}", flush=True)
+            logger.exception("thread crashed: %s: %s", type(e).__name__, e)
             self._setup_error = e
             self._ready.set()
         finally:
-            print("[live] thread exiting", flush=True)
+            logger.info("thread exiting")
             asyncio.set_event_loop(None)
             try:
                 self._loop.close()
@@ -142,37 +162,37 @@ class LiveTranscriber:
         이므로 ``async with`` (또는 수동 ``__aenter__/__aexit__``) 로 진입.
         외부에서 세션 종료 시키기 위해 수동 진입 패턴 사용.
         """
-        print("[live] creating genai.Client...", flush=True)
+        logger.info("creating genai.Client...")
         self.client = genai.Client(api_key=self._api_key)
-        print(f"[live] client OK (key=***{self._api_key[-4:]})", flush=True)
+        logger.info("client OK (key=***%s)", self._api_key[-4:])
         self._audio_queue = asyncio.Queue()
 
-        print("[live] calling client.aio.live.connect()...", flush=True)
+        logger.info("calling client.aio.live.connect()...")
         cm = self.client.aio.live.connect(
             model=GEMINI_LIVE_MODEL,
             config=self._config,
         )
         try:
-            print("[live] awaiting cm.__aenter__()...", flush=True)
+            logger.info("awaiting cm.__aenter__()...")
             self.session = await cm.__aenter__()
-            print("[live] session OPENED ✓", flush=True)
+            logger.info("session OPENED ✓")
             self._running = True
             self._send_task = asyncio.create_task(self._send_loop())
             self._recv_task = asyncio.create_task(self._recv_loop())
             self._ready.set()  # 메인 스레드 해제
-            print("[live] enter run loop (waiting on _running)", flush=True)
+            logger.info("enter run loop (waiting on _running)")
             while self._running:
                 await asyncio.sleep(0.05)
-            print("[live] _running=False → leaving run loop", flush=True)
+            logger.info("_running=False → leaving run loop")
         finally:
             self._running = False
             if self.session is not None:
                 try:
-                    print("[live] closing session via __aexit__...", flush=True)
+                    logger.info("closing session via __aexit__...")
                     await cm.__aexit__(None, None, None)
-                    print("[live] session closed", flush=True)
+                    logger.info("session closed")
                 except Exception as e:
-                    print(f"[live] __aexit__ error: {e}", flush=True)
+                    logger.warning("__aexit__ error: %s", e)
                 self.session = None
 
     async def _send_loop(self) -> None:
@@ -189,45 +209,47 @@ class LiveTranscriber:
                 )
                 sent_count += 1
                 if first_send:
-                    print(f"[live] first audio chunk sent ({len(chunk)} bytes)", flush=True)
+                    logger.info("first audio chunk sent (%d bytes)", len(chunk))
                     first_send = False
                 elif sent_count % 50 == 0:
-                    print(f"[live] sent {sent_count} chunks ({sent_count * len(chunk)} bytes total)", flush=True)
+                    logger.info(
+                        "sent %d chunks (%d bytes total)",
+                        sent_count, sent_count * len(chunk),
+                    )
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"[live] send error: {type(e).__name__}: {e}", flush=True)
+                logger.warning("send error: %s: %s", type(e).__name__, e)
                 break
-        print(f"[live] send_loop ended (sent {sent_count} chunks total)", flush=True)
+        logger.info("send_loop ended (sent %d chunks total)", sent_count)
 
     async def _recv_loop(self) -> None:
         recv_count = 0
         try:
-            print("[live] recv_loop waiting for responses...", flush=True)
+            logger.info("recv_loop waiting for responses...")
             async for response in self.session.receive():
                 if not self._running:
-                    print("[live] recv_loop: _running=False, break", flush=True)
+                    logger.info("recv_loop: _running=False, break")
                     break
                 recv_count += 1
                 sc = response.server_content
-                if sc is None:
-                    if recv_count == 1:
-                        print(f"[live] first response has no server_content: {response}", flush=True)
-                    elif recv_count % 50 == 0:
-                        print(f"[live] recv_count={recv_count}", flush=True)
-                    continue
-                interim = sc.interim_input_transcription.text if sc.interim_input_transcription is not None else None
-                final = sc.input_transcription.text if sc.input_transcription is not None else None
-                if interim or final:
-                    print(
-                        f"[live] recv #{recv_count} interim={interim!r} final={final!r}",
-                        flush=True,
+                interim = sc.interim_input_transcription.text if (sc and sc.interim_input_transcription is not None) else None
+                final = sc.input_transcription.text if (sc and sc.input_transcription is not None) else None
+                # 모든 응답을 찍어 모델이 진짜 침묵인지 / 응답 형태가 예상과 다른지 확인
+                if recv_count <= 3 or interim or final or recv_count % 20 == 0:
+                    logger.info(
+                        "recv #%d sc=%r interim=%r final=%r",
+                        recv_count, sc, interim, final,
                     )
-                    # 첫 응답은 전체 response 디버그 출력
                     if recv_count == 1:
-                        print(f"[live] full first response: {response}", flush=True)
+                        # 첫 응답은 전체 dump
+                        logger.info("FULL first response: %r", response)
+                        try:
+                            logger.info("FULL type: %s", type(response).__name__)
+                        except Exception:
+                            pass
                 # Interim (저지연 부분 결과) — UI 덮어쓰기
                 if interim and self.on_interim:
                     try:
@@ -241,17 +263,15 @@ class LiveTranscriber:
                     except Exception:
                         pass
         except asyncio.CancelledError:
-            print(f"[live] recv_loop cancelled (got {recv_count} responses)", flush=True)
+            logger.info("recv_loop cancelled (got %d responses)", recv_count)
         except Exception as e:
             err_str = str(e)
             # WebSocket 정상 close 는 에러로 raise 됨 (APIError 1000) — 정상 종료
             if "1000" in err_str or "ConnectionClosedOK" in err_str:
-                print(
-                    f"[live] recv_loop: connection closed normally ({recv_count} responses)",
-                    flush=True,
+                logger.info(
+                    "recv_loop: connection closed normally (%d responses)",
+                    recv_count,
                 )
             else:
-                print(f"[live] recv_loop error: {type(e).__name__}: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
-        print(f"[live] recv_loop ended (total {recv_count} responses)", flush=True)
+                logger.exception("recv_loop error: %s: %s", type(e).__name__, e)
+        logger.info("recv_loop ended (total %d responses)", recv_count)

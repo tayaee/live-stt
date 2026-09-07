@@ -30,6 +30,7 @@ startup 시점에 cffi/websockets.speedups가 로드되지 않음 → tkinter ma
 안정 진입.
 """
 import argparse
+import logging
 import sys
 import threading
 from typing import Optional, Sequence
@@ -41,6 +42,8 @@ from .keypool import init_pool
 from .target import TargetApp
 from .trigger import TriggerHook
 from .ui import MainWindow
+
+logger = logging.getLogger(__name__)
 
 
 class Daemon:
@@ -82,7 +85,7 @@ class Daemon:
         try:
             self.trigger.install()
         except RuntimeError as e:
-            print(f"[Hook Error] {e}", file=sys.stderr)
+            logger.error("Hook Error: %s", e)
             self.ui.set_status(f"⚠ Hook 실패: {e}")
             # 그래도 UI는 살아있게 (사용자가 직접 종료 가능)
 
@@ -135,9 +138,8 @@ class Daemon:
         interim 인 경우 UI 의 raw 버퍼 전체 교체 (모델이 best-guess 를
         계속 갱신). final 인 경우 newline 과 함께 append (lock-in).
         """
-        print(
-            f"[daemon] _on_live_text: {text!r} (interim_flag={self._live_interim})",
-            flush=True,
+        logger.info(
+            "_on_live_text: %r (interim_flag=%s)", text, self._live_interim
         )
         if not text:
             return
@@ -150,20 +152,20 @@ class Daemon:
 
     def _on_live_interim(self, text: str) -> None:
         """interim transcription (저지연 부분 결과) → flag ON."""
-        print(f"[daemon] _on_live_interim: {text!r}", flush=True)
+        logger.info("_on_live_interim: %r", text)
         self._live_interim = True
         self.ui.schedule(self.ui.set_raw, text)
 
     # ── 메인 로직 (메인 스레드에서 실행) ─
     def _toggle_listening(self) -> None:
-        print(f"[daemon] toggle_listening (was listening={self.is_listening})", flush=True)
+        logger.info("toggle_listening (was listening=%s)", self.is_listening)
         if self.is_listening:
             self._stop_listening()
         else:
             self._start_listening()
 
     def _start_listening(self) -> None:
-        print("[daemon] _start_listening", flush=True)
+        logger.info("_start_listening")
         if not self.target.capture():
             self.ui.set_status("⚠ 활성 윈도우 캡처 실패")
             return
@@ -177,22 +179,20 @@ class Daemon:
         # Lazy import: live.py → google.genai → cffi (이 시점에 처음 로드됨).
         # 이미 tkinter mainloop는 통과한 상태이므로 안전.
         def _init_session() -> None:
-            print("[daemon] _init_session thread start", flush=True)
+            logger.info("_init_session thread start")
             try:
                 from .live import LiveTranscriber  # lazy
                 tr = LiveTranscriber(
                     on_text=self._on_live_text,
                     on_interim=self._on_live_interim,
                 )
-                print("[daemon] LiveTranscriber created, calling start()...", flush=True)
+                logger.info("LiveTranscriber created, calling start()...")
                 tr.start(ready_timeout=10.0)  # 동기: ready 이벤트까지 대기
-                print("[daemon] LiveTranscriber ready (session open)", flush=True)
+                logger.info("LiveTranscriber ready (session open)")
                 self.transcriber = tr
                 self._live_interim = False
             except BaseException as e:  # 넓게 잡아 데몬은 살려둠
-                print(f"[daemon] [Live Error] {type(e).__name__}: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
+                logger.exception("[Live Error] %s: %s", type(e).__name__, e)
                 self.ui.schedule(
                     self.ui.set_status, f"⚠ Gemini Live 실패: {type(e).__name__}"
                 )
@@ -206,7 +206,7 @@ class Daemon:
         threading.Thread(target=_init_session, daemon=True, name="LiveInit").start()
 
     def _stop_listening(self) -> None:
-        print("[daemon] _stop_listening", flush=True)
+        logger.info("_stop_listening")
         if not self.is_listening:
             return
 
@@ -218,7 +218,7 @@ class Daemon:
 
         # 2) Gemini Live 종료 (전용 스레드의 루프를 정리)
         if self.transcriber:
-            print("[daemon] transcriber.stop()", flush=True)
+            logger.info("transcriber.stop()")
             try:
                 self.transcriber.stop()
             except Exception:
@@ -259,7 +259,7 @@ class Daemon:
                 else:
                     self.ui.schedule(self.ui.set_status, "⚠ 재작성 결과 비어있음")
             except Exception as e:
-                print(f"[Rewrite Error] {e}", file=sys.stderr)
+                logger.exception("[Rewrite Error] %s", e)
                 self.ui.schedule(self.ui.set_status, f"⚠ 재작성 실패: {e}")
 
         threading.Thread(target=_do, daemon=True).start()
@@ -287,7 +287,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """진입점."""
+    # 로깅 셋업 (매 실행 시 logs/app.log truncate)
+    from .logging_setup import setup_logging
+    setup_logging()
+
     args = _parse_args(argv)
+    logger.info("live-stt starting (argv=%s)", sys.argv)
 
     # 키 풀 초기화 (CLI 옵션 반영). 실패 시 여기서 예외로 종료.
     init_pool(cli_csv=args.gemini_api_keys)

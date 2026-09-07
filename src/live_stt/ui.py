@@ -20,11 +20,14 @@ crash가 재현되지 않을 가능성이 높음.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Callable, List, Optional
 
+logger = logging.getLogger(__name__)
+
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -85,10 +88,9 @@ def _pump_queue() -> None:
             drained += 1
         except Exception as e:
             import traceback
-            print(f"[ui] schedule error: {e}", flush=True)
-            traceback.print_exc()
+            logger.exception("schedule error: %s", e)
     if drained:
-        print(f"[ui-poll] drained {drained} (tid={_t.get_ident()})", flush=True)
+        logger.debug("drained %d (tid=%s)", drained, _t.get_ident())
 
 
 def _start_pump_once() -> None:
@@ -225,20 +227,20 @@ class MainWindow:
         self.raw_edit.clear()
 
     def append_raw(self, text: str) -> None:
-        print(f"[ui] append_raw: {text!r}", flush=True)
+        logger.info("append_raw: %r", text)
         # QPlainTextEdit.appendPlainText 는 항상 새 줄로 시작 → cursor 이동으로 동일 효과
         cursor = self.raw_edit.textCursor()
-        cursor.movePosition(cursor.End)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(text)
         self.raw_edit.setTextCursor(cursor)
         self.raw_edit.ensureCursorVisible()
 
     def set_raw(self, text: str) -> None:
         """raw 버퍼 전체 교체. interim transcription 갱신용."""
-        print(f"[ui] set_raw: {text!r}", flush=True)
+        logger.info("set_raw: %r", text)
         self.raw_edit.setPlainText(text)
         cursor = self.raw_edit.textCursor()
-        cursor.movePosition(cursor.End)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
         self.raw_edit.setTextCursor(cursor)
         self.raw_edit.ensureCursorVisible()
 
@@ -268,7 +270,7 @@ class MainWindow:
         # 너무 빈번하면 console 잠수. 5% 단위로 양자화.
         # print는 첫 감지시에만.
         if not hasattr(self, "_last_logged_pct") or abs(pct - self._last_logged_pct) >= 5:
-            print(f"[ui] set_level: {pct}", flush=True)
+            logger.debug("set_level: %d", pct)
             self._last_logged_pct = pct
         self.level_bar.setValue(pct)
         self.level_bar.setStyleSheet(

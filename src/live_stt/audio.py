@@ -12,12 +12,15 @@ PyAudio 콜백은 별도 PortAudio 스레드에서 호출됨.
 """
 from __future__ import annotations
 
+import logging
 import struct
 from typing import Callable, Optional
 
 import pyaudio
 
 from .config import SAMPLE_RATE, CHANNELS, BLOCKSIZE, DTYPE, INT16_MAX
+
+logger = logging.getLogger(__name__)
 
 _FORMAT = pyaudio.paInt16  # 16-bit signed int
 
@@ -104,12 +107,13 @@ class AudioStream:
             self._pa = pyaudio.PyAudio()
             try:
                 default_in = self._pa.get_default_input_device_info()
-                print(
-                    f"[audio] mic device: [{default_in['index']}] {default_in['name']}",
-                    flush=True,
+                logger.info(
+                    "mic device: [%s] %s",
+                    default_in['index'],
+                    default_in['name'],
                 )
             except Exception as e:
-                print(f"[audio] get_default_input_device failed: {e}", flush=True)
+                logger.warning("get_default_input_device failed: %s", e)
         self._stream = self._pa.open(
             format=_pyaudio_format(DTYPE),
             channels=CHANNELS,
@@ -119,14 +123,14 @@ class AudioStream:
             stream_callback=self._callback,
         )
         self._stream.start_stream()
-        print(
-            f"[audio] stream opened: {SAMPLE_RATE}Hz, {CHANNELS}ch, blocksize={BLOCKSIZE}",
-            flush=True,
+        logger.info(
+            "stream opened: %dHz, %dch, blocksize=%d",
+            SAMPLE_RATE, CHANNELS, BLOCKSIZE,
         )
 
     def stop(self) -> None:
         if self._stream is not None:
-            print("[audio] closing stream", flush=True)
+            logger.info("closing stream")
             try:
                 self._stream.stop_stream()
                 self._stream.close()
