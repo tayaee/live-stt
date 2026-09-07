@@ -1,6 +1,6 @@
 """타겟 앱 윈도우 관리 (hwnd 캡처/복원).
 
-Right Alt 1번째 누를 때 활성 앱을 캡처하여, Right Alt 2번째로 Paste 시
+Right Ctrl 1번째 누를 때 활성 앱을 캡처하여, Right Ctrl 2번째로 Paste 시
 포커스를 복원한 뒤 SendInput으로 텍스트 주입.
 """
 import ctypes
@@ -8,6 +8,30 @@ import time
 from ctypes import wintypes
 
 user32 = ctypes.windll.user32
+
+# ── Win32 시그니처 고정 (64-bit 호환) ────────────────────────────────
+# HWND/HANDLE 등은 64-bit에서 8바이트. argtypes 미설정 시 c_int로 변환되어
+# 큰 hwnd 값에서 OverflowError 가능.
+user32.GetForegroundWindow.argtypes = ()
+user32.GetForegroundWindow.restype = wintypes.HWND
+
+user32.GetFocus.argtypes = ()
+user32.GetFocus.restype = wintypes.HWND
+
+user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, wintypes.LPDWORD)
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+user32.GetWindowTextW.restype = ctypes.c_int
+
+user32.IsWindow.argtypes = (wintypes.HWND,)
+user32.IsWindow.restype = wintypes.BOOL
+
+user32.AllowSetForegroundWindow.argtypes = (wintypes.DWORD,)
+user32.AllowSetForegroundWindow.restype = wintypes.BOOL
+
+user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+user32.SetForegroundWindow.restype = wintypes.BOOL
 
 
 class TargetApp:

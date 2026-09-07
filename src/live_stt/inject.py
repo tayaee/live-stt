@@ -16,6 +16,28 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_KEYUP = 0x0002
 
+# ── Win32 시그니처 고정 (64-bit 호환) ────────────────────────────────
+user32.SendInput.argtypes = (
+    wintypes.UINT,    # nInputs
+    ctypes.c_void_p,  # pInput (LPINPUT)
+    ctypes.c_int,     # cbSize
+)
+user32.SendInput.restype = wintypes.UINT
+
+imm32.ImmGetContext.argtypes = (wintypes.HWND,)
+imm32.ImmGetContext.restype = wintypes.HANDLE  # HIMC = c_void_p
+
+imm32.ImmNotifyIME.argtypes = (
+    wintypes.HANDLE,  # HIMC
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.DWORD,
+)
+imm32.ImmNotifyIME.restype = wintypes.BOOL
+
+imm32.ImmReleaseContext.argtypes = (wintypes.HWND, wintypes.HANDLE)  # HIMC
+imm32.ImmReleaseContext.restype = wintypes.BOOL
+
 
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [

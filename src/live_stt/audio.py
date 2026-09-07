@@ -1,60 +1,147 @@
-"""마이크 스트림 (sounddevice.RawInputStream).
+"""마이크 스트림 (PyAudio 기반).
 
-16kHz 16-bit PCM mono 청크를 on_chunk 콜백 또는 큐에 전달.
-sounddevice 콜백은 별도 스레드에서 호출됨.
+16kHz 16-bit PCM mono 청크를 ``on_chunk`` 콜백으로 전달.
+추가로 ``on_level`` 콜백으로 RMS 기반 음압(0~100)을 매 청크마다 통지 →
+UI의 수직 게이지가 반응함.
+
+PyAudio는 ctypes 바인딩을 사용하므로 cffi C 확장 (sounddevice)와 달리
+``_cffi_backend`` 를 로드하지 않음 → tkinter mainloop 진입 시 fatal
+``PyEval_RestoreThread`` 회피.
+
+PyAudio 콜백은 별도 PortAudio 스레드에서 호출됨.
 """
+from __future__ import annotations
+
+import struct
 from typing import Callable, Optional
-import queue
 
-import sounddevice as sd
+import pyaudio
 
-from .config import SAMPLE_RATE, CHANNELS, BLOCKSIZE, DTYPE
+from .config import SAMPLE_RATE, CHANNELS, BLOCKSIZE, DTYPE, INT16_MAX
+
+_FORMAT = pyaudio.paInt16  # 16-bit signed int
+
+
+def _pyaudio_format(dtype: str) -> int:
+    if dtype == "int16":
+        return pyaudio.paInt16
+    if dtype == "int32":
+        return pyaudio.paInt32
+    if dtype == "float32":
+        return pyaudio.paFloat32
+    if dtype == "uint8":
+        return pyaudio.paUint8
+    raise ValueError(f"unsupported dtype: {dtype!r}")
+
+
+def _rms_to_pct(rms: float) -> int:
+    """RMS → 0~100 게이지 값. 사람이 들을 수 있는 영역을 시각적으로 잘 보이도록 스케일 보정.
+
+    정상 음성 RMS 약 200~3000. 1%라도 표시되도록 log-ish 한 스케일.
+        ratio = rms / INT16_MAX
+    게이지 = clamp(ratio * 10 * 100, 0, 100)
+    """
+    if rms <= 0.0:
+        return 0
+    ratio = rms / INT16_MAX
+    pct = int(ratio * 10.0 * 100.0)  # 10배 증폭 (시각화용)
+    if pct < 1 and rms > 0:
+        pct = 1
+    return max(0, min(100, pct))
 
 
 class AudioStream:
-    """마이크에서 PCM 청크를 받아 콜백 또는 큐에 전달."""
+    """마이크에서 PCM 청크를 받아 콜백으로 전달."""
 
-    def __init__(self, on_chunk: Optional[Callable[[bytes], None]] = None) -> None:
-        self.on_chunk = on_chunk  # callable: bytes -> None (콜백 모드)
-        self.queue: queue.Queue[bytes] = queue.Queue()  # 큐 모드 폴백
-        self.stream: Optional[sd.RawInputStream] = None
+    def __init__(
+        self,
+        on_chunk: Optional[Callable[[bytes], None]] = None,
+        on_level: Optional[Callable[[int], None]] = None,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        on_chunk
+            PCM 청크 받을 때 (PortAudio 스레드).
+        on_level
+            RMS 기반 음압 (0~100) 콜백. UI 게이지 갱신용.
+        """
+        self.on_chunk = on_chunk
+        self.on_level = on_level
+        self._pa: Optional[pyaudio.PyAudio] = None
+        self._stream = None
 
-    def _callback(self, indata, _frames, _time_info, _status) -> None:
-        # _status 플래그는 일단 무시 (overflow 등은 추후 로깅 가능)
-        chunk = bytes(indata)
+    def _callback(self, in_data: bytes, _frame_count, _time_info, _status) -> tuple:
+        """PyAudio 입력 콜백 (PortAudio 스레드에서 호출)."""
+        # 1) RMS 계산 → 음압 콜백 (가시화용)
+        rms = 0.0
+        if self.on_level:
+            try:
+                n = len(in_data) // 2  # int16 = 2 bytes/sample
+                if n > 0:
+                    samples = struct.unpack(f"<{n}h", in_data)
+                    sumsq = 0
+                    for s in samples:
+                        sumsq += s * s
+                    rms = (sumsq / n) ** 0.5
+                    self.on_level(_rms_to_pct(rms))
+            except BaseException:
+                pass
+
+        # 2) 청크 콜백 (실제 STT 전송용)
         if self.on_chunk:
-            self.on_chunk(chunk)
-        else:
-            self.queue.put_nowait(chunk)
+            try:
+                self.on_chunk(in_data)
+            except BaseException:
+                # 콜백 스레드 예외가 PortAudio 내부 상태를 깨지 않도록 흡수
+                pass
+        return (None, pyaudio.paContinue)
 
     def start(self) -> None:
-        if self.stream is not None:
+        if self._stream is not None:
             return
-        stream = sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
+        if self._pa is None:
+            self._pa = pyaudio.PyAudio()
+            try:
+                default_in = self._pa.get_default_input_device_info()
+                print(
+                    f"[audio] mic device: [{default_in['index']}] {default_in['name']}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[audio] get_default_input_device failed: {e}", flush=True)
+        self._stream = self._pa.open(
+            format=_pyaudio_format(DTYPE),
             channels=CHANNELS,
-            dtype=DTYPE,
-            blocksize=BLOCKSIZE,
-            callback=self._callback,
+            rate=SAMPLE_RATE,
+            input=True,
+            frames_per_buffer=BLOCKSIZE,
+            stream_callback=self._callback,
         )
-        stream.start()
-        self.stream = stream
+        self._stream.start_stream()
+        print(
+            f"[audio] stream opened: {SAMPLE_RATE}Hz, {CHANNELS}ch, blocksize={BLOCKSIZE}",
+            flush=True,
+        )
 
     def stop(self) -> None:
-        if self.stream is not None:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
-        # 큐 비우기
-        while not self.queue.empty():
+        if self._stream is not None:
+            print("[audio] closing stream", flush=True)
             try:
-                self.queue.get_nowait()
-            except queue.Empty:
-                break
-
-    def get_chunk(self, timeout: float = 0.1) -> Optional[bytes]:
-        """큐 모드일 때 청크 가져오기. 콜백 모드에선 None."""
-        try:
-            return self.queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+                self._stream.stop_stream()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        if self._pa is not None:
+            try:
+                self._pa.terminate()
+            except Exception:
+                pass
+            self._pa = None
+        # 게이지 0으로 (다음 받을 때까지 0 표시)
+        if self.on_level:
+            try:
+                self.on_level(0)
+            except BaseException:
+                pass

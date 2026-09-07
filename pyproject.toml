@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "live-stt"
 version = "0.1.0"
-description = "Windows 백그라운드 음성 받아쓰기 데몬 (Right Alt 시작/종료, Right Shift 재작성)"
+description = "Windows 백그라운드 음성 받아쓰기 데몬 (Right Ctrl 시작/종료, Right Shift 재작성)"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "google-genai",
-    "sounddevice",
-    "numpy",
+    "pyaudio",          # ctypes 기반 → cffi 비의존 (sounddevice 대체)
+    "PySide6",          # Qt6 GUI — tkinter 대체 (이 환경 mainloop 호환성)
 ]
 
 [project.scripts]
