@@ -1,8 +1,8 @@
 # live-stt handoff.md
 
-Windows 백그라운드 음성 받아쓰기 데몬. **Right Ctrl** 1회 = 받아쓰기 시작, 2회 = 종료+자동 Paste. **Right Shift** = 지금까지 발화 내용 재작성. tkinter UI에 **위쪽(Raw)** / **아래쪽(Clean)** 두 텍스트 버퍼를 상시 표시.
+Windows 백그라운드 음성 받아쓰기 데몬. **Right Ctrl** 1회 = 받아쓰기 시작, 2회 = 종료 + Gemma 텍스트 재작성 + 자동 Paste. UI에 **위쪽(Raw)** / **아래쪽(Clean)** 두 텍스트 버퍼를 상시 표시.
 
-마지막 갱신: 2026-09-07 (Phase 2c 통합 완료 — Windows 검증 대기)
+마지막 갱신: 2026-09-07 (Right Shift 제거, Right Ctrl 종료 시 Gemma 재작성 + 자동 Paste로 통합)
 
 ---
 
@@ -11,11 +11,11 @@ Windows 백그라운드 음성 받아쓰기 데몬. **Right Ctrl** 1회 = 받아
 ```
 [마이크] → [Gemini Live STT] → UI 위쪽 버퍼 (raw)
                                      │
-                            Right Shift │ Gemini 4 31b IT 재작성
+                       Right Ctrl 2nd│ 받아쓴 텍스트를 Gemma 4 31b IT로 전송
                                      ↓
                             UI 아래쪽 버퍼 (clean)
                                      │
-                          Right Ctrl 2nd│ SendInput + IMM close
+                             재작성 완료 후│ SendInput + IMM close
                                      ↓
                           활성 윈도우 hwnd에 자동 입력
 ```
@@ -122,12 +122,12 @@ Windows 백그라운드 음성 받아쓰기 데몬. **Right Ctrl** 1회 = 받아
 │ │정말 좋네요                                                    │ │
 │ └─────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────┤
-│ 아래쪽 — Clean (Gemini 4 31b IT 재작성)         │
+│ 아래쪽 — Clean (Gemma 4 31b IT 재작성)          │
 │ ┌─────────────────────────────────────────────┐ │
 │ │안녕하세요. 오늘은 날씨가 정말 좋네요.            │ │
 │ └─────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────┤
-│ Right Ctrl: 시작/종료 | Right Shift: 재작성 | Ctrl+Z: 마지막 취소 │
+│ Right Ctrl: 받아쓰기 시작/종료 (종료 시 재작성+입력) | Ctrl+Z: 마지막 취소 │
 │                              [ 종료 ]                       │
 └─────────────────────────────────────────────────┘
 ```
@@ -137,18 +137,17 @@ Windows 백그라운드 음성 받아쓰기 데몬. **Right Ctrl** 1회 = 받아
 | 키 | 동작 |
 |---|---|
 | **Right Ctrl** (1st) | hwnd 캡처 → 마이크 ON → Gemini Live 시작 → 위쪽 버퍼 클리어 |
-| **Right Shift** | 위쪽 raw + 아래쪽 tail(N=500자) → Gemini 4 31b IT → 아래쪽 append |
-| **Right Ctrl** (2nd) | 마이크 OFF → Gemini Live 종료 → 아래쪽 clean → `SendInput`으로 자동 입력 |
+| **Right Ctrl** (2nd) | 마이크 OFF → Gemini Live 종료 → 위쪽 raw 텍스트를 Gemma 4 31b IT에 전송하여 재작성 → 아래쪽 append → `SendInput`으로 자동 입력 |
 | **Ctrl+Z** | 아래쪽 버퍼 마지막 줄 삭제 (재작성 취소) |
 | **Esc / 종료 버튼** | 데몬 종료 (hook 해제 + asyncio loop stop + Ctrl+C 가능) |
 
 ### 4.3 스레딩 모델
 
 ```
-메인 스레드       : tkinter mainloop + WH_KEYBOARD_LL hook 콜백
+메인 스레드       : PySide6 mainloop + WH_KEYBOARD_LL hook 콜백
 asyncio 스레드   : Gemini Live send_loop / recv_loop
 sounddevice 스레드: 마이크 콜백 → transcriber 큐에 put
-rewrite 스레드    : Right Shift마다 새로 spawn (결과만 반환)
+rewrite 스레드    : Right Ctrl 종료마다 백그라운드 spawn (Gemma에 text 전송 후 paste)
 ```
 
 UI 업데이트는 모두 `ui.schedule(func, *args)` (= `root.after(0, ...)`) 사용 → 어느 스레드에서든 안전.

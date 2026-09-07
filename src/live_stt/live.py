@@ -90,8 +90,8 @@ class LiveTranscriber:
         except RuntimeError:
             pass
 
-    def stop(self, timeout: float = 2.0) -> None:
-        """전용 스레드/루프 종료. 세션에 audio_stream_end 보내 finalize."""
+    def stop(self, timeout: float = 0.5) -> None:
+        """전용 스레드/루프 종료. 세션에 audio_stream_end 보내 정리."""
         if self._loop is None:
             return
         try:
@@ -108,16 +108,14 @@ class LiveTranscriber:
         """Finalize 스트림 신호 → tasks cancel → running=False."""
         if not self._running and self.session is None:
             return
-        # 1) finalize: audio 끝났음을 서버에 알려 최종 transcript 가 도착하게 함
+        # 1) finalize: audio 끝났음을 서버에 전달
         if self.session is not None:
             try:
                 await self.session.send_realtime_input(audio_stream_end=True)
             except Exception:
                 pass
-        # 2) 모델이 finalize 후 final transcript 를 보내는 시간 확보.
-        #    매우 짧은 발음(예: 0.5~1초)에서는 모델이 finalize 전에 응답을
-        #    emit 하기 어려워 final 0개 → 2초 정도 기다림.
-        await asyncio.sleep(2.0)
+        # 2) 마지막 잔여 패킷 수신을 위한 최소 대기 (0.15초)
+        await asyncio.sleep(0.15)
         # 3) 송수신 태스크 명시적 cancel — 그렇지 않으면 루프 종료 시
         #    "Task was destroyed but it is pending!" 경고 발생.
         for task_attr in ("_send_task", "_recv_task"):

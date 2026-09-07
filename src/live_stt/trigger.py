@@ -1,7 +1,7 @@
-"""키보드 단축키 hook (Right Ctrl 시작/종료, Right Shift 재작성).
+"""키보드 단축키 hook (Right Ctrl 시작/종료).
 
 WH_KEYBOARD_LL low-level hook 사용. Windows는 hook 콜백을 GUI 스레드에서
-호출하므로 tkinter mainloop와 동일 스레드에서 install해야 함.
+호출하므로 mainloop와 동일 스레드에서 install해야 함.
 
 ctypes argtypes/restype을 Win32 스펙에 맞게 설정하지 않으면 64-bit에서
 ``LPARAM`` (포인터)이 잘려서 ``OverflowError`` 발생 — hook 체인이 끊김.
@@ -9,7 +9,7 @@ ctypes argtypes/restype을 Win32 스펙에 맞게 설정하지 않으면 64-bit�
 import ctypes
 from ctypes import wintypes
 
-from .config import VK_RCONTROL, VK_RSHIFT
+from .config import VK_RCONTROL
 
 user32 = ctypes.windll.user32
 
@@ -43,11 +43,10 @@ user32.CallNextHookEx.restype = _LRESULT
 
 
 class TriggerHook:
-    """Right Ctrl / Right Shift 단축키 hook."""
+    """Right Ctrl 단축키 hook (시작/종료 토글)."""
 
-    def __init__(self, on_ctrl=None, on_shift=None) -> None:
+    def __init__(self, on_ctrl=None) -> None:
         self.on_ctrl = on_ctrl  # callable: Right Ctrl 누를 때 호출
-        self.on_shift = on_shift  # callable: Right Shift 누를 때 호출
         self._hook_id: int = 0
         self._proc = None  # 콜백 참조 유지 (GC 방지)
 
@@ -88,11 +87,6 @@ class TriggerHook:
                     self.on_ctrl()
                 except BaseException:
                     pass  # 콜백 예외는 hook 체인 끊김 방지
-            elif vk == VK_RSHIFT and self.on_shift:
-                try:
-                    self.on_shift()
-                except BaseException:
-                    pass
         try:
             return user32.CallNextHookEx(self._hook_id, n_code, w_param, l_param)
         except BaseException:

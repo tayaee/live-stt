@@ -25,8 +25,8 @@ Proactor 버그 경로가 사라짐. 메인 스레드는 오직 tkinter mainloop
 websockets 경로로 로드됨.
 
 해결: **google.genai 의존성(live.py, rewrite.py) 모듈 레벨 import 제거**.
-Right Ctrl (Live), Right Shift (Rewrite) 시점에 lazy import. 이로써
-startup 시점에 cffi/websockets.speedups가 로드되지 않음 → tkinter mainloop
+Right Ctrl (Live 시작 / Rewrite 종료) 시점에 lazy import. 이로써
+startup 시점에 cffi/websockets.speedups가 로드되지 않음 → mainloop
 안정 진입.
 """
 import argparse
@@ -64,7 +64,6 @@ class Daemon:
         )
         self.trigger = TriggerHook(
             on_ctrl=self._on_ctrl_pressed,
-            on_shift=self._on_shift_pressed,
         )
 
         self.is_listening = False
@@ -125,12 +124,6 @@ class Daemon:
         """Right Ctrl — 토글 (hook 콜백, 메인 스레드)."""
         # mainloop 안에서 호출되지만 안전을 위해 schedule
         self.ui.schedule(self._toggle_listening)
-
-    def _on_shift_pressed(self) -> None:
-        """Right Shift — 재작성 (hook 콜백, 메인 스레드)."""
-        if not self.is_listening:
-            return
-        self.ui.schedule(self._do_rewrite)
 
     def _on_live_text(self, text: str) -> None:
         """Gemini Live 텍스트 도착 (LiveTranscriber 전용 스레드).
@@ -206,17 +199,19 @@ class Daemon:
         threading.Thread(target=_init_session, daemon=True, name="LiveInit").start()
 
     def _stop_listening(self) -> None:
-        logger.info("_stop_listening")
+        logger.info("_stop_listening: stopping dictation")
         if not self.is_listening:
             return
 
-        # 1) 마이크 정리
+        self.is_listening = False
+
+        # 1) 마이크 정리 (오디오 입력 즉시 중단)
         try:
             self.audio.stop()
         except Exception:
             pass
 
-        # 2) Gemini Live 종료 (전용 스레드의 루프를 정리)
+        # 2) Gemini Live 종료 (전용 스레드의 루프 정리)
         if self.transcriber:
             logger.info("transcriber.stop()")
             try:
@@ -225,51 +220,57 @@ class Daemon:
                 pass
         self.transcriber = None
 
-        # 3) Paste (clean 버퍼 전체)
-        clean = self.ui.get_clean()
-        if clean and self.target.is_valid():
-            self.ui.set_status("📤 Paste 중...")
-            self.target.restore_focus()
-            clear_ime(self.target.hwnd)
-            send_text(clean)
-            self.ui.set_status("✅ Paste 완료 — 대기 중")
-        else:
-            self.ui.set_status("⏹️ 받아쓰기 종료 — 대기 중")
+        # 3) 지금까지 받아써진 텍스트 가져오기
+        raw = self.ui.get_raw().strip()
+        logger.info("dictation stopped, transcribed raw text: %r", raw)
 
-        self.is_listening = False
-
-    def _do_rewrite(self) -> None:
-        raw = self.ui.get_raw()
-        if not raw.strip():
+        if not raw:
+            self.ui.set_status("⏹️ 받아쓰기 종료 — 대기 중 (인식된 텍스트 없음)")
             return
-        clean_tail = self.ui.get_clean_tail(config.REWRITE_CONTEXT_TAIL)
 
-        self.ui.set_status("✍️ 재작성 중...")
+        # 4) 이미 받아쓴 텍스트를 Gemma에 전달하여 재작성 후 타겟 창에 자동 입력
+        self.ui.set_status("✍️ Gemma 재작성 중...")
+        target_app = self.target
 
-        # Lazy import: rewrite.py → google.genai → cffi (이 시점에 로드).
-        def _do() -> None:
+        def _rewrite_and_paste() -> None:
             try:
                 from .rewrite import Rewriter  # lazy
                 if self.rewriter is None:
                     self.rewriter = Rewriter()
+
+                clean_tail = self.ui.get_clean_tail(config.REWRITE_CONTEXT_TAIL)
+                logger.info(
+                    "Sending transcribed text (%d chars) to Gemma (%s) for rewrite",
+                    len(raw),
+                    config.GEMINI_REWRITE_MODEL,
+                )
                 rewritten = self.rewriter.rewrite(raw, clean_tail)
+
                 if rewritten:
                     self.ui.schedule(self.ui.append_clean, rewritten)
-                    self.ui.schedule(self.ui.set_status, "🔴 받아쓰기 진행 중")
+                    if target_app.is_valid():
+                        self.ui.schedule(self.ui.set_status, "📤 Paste 중...")
+                        target_app.restore_focus()
+                        clear_ime(target_app.hwnd)
+                        send_text(rewritten)
+                        self.ui.schedule(self.ui.set_status, "✅ 완료 — 대기 중")
+                        logger.info("Paste completed: %r", rewritten)
+                    else:
+                        self.ui.schedule(self.ui.set_status, "✅ 재작성 완료 (타겟 윈도우 없음) — 대기 중")
                 else:
-                    self.ui.schedule(self.ui.set_status, "⚠ 재작성 결과 비어있음")
+                    self.ui.schedule(self.ui.set_status, "⚠ 재작성 결과 비어있음 — 대기 중")
             except Exception as e:
                 logger.exception("[Rewrite Error] %s", e)
                 self.ui.schedule(self.ui.set_status, f"⚠ 재작성 실패: {e}")
 
-        threading.Thread(target=_do, daemon=True).start()
+        threading.Thread(target=_rewrite_and_paste, daemon=True, name="GemmaRewrite").start()
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """CLI 인자 파싱."""
     parser = argparse.ArgumentParser(
         prog="live-stt",
-        description="Windows 음성 받아쓰기 데몬 (Right Ctrl 시작/종료, Right Shift 재작성)",
+        description="Windows 음성 받아쓰기 데몬 (Right Ctrl 시작/종료, 종료 시 Gemma 재작성 후 자동 입력)",
     )
     parser.add_argument(
         "--gemini-api-keys",

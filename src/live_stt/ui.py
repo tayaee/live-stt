@@ -175,7 +175,7 @@ class MainWindow:
 
         self.clean_edit = QPlainTextEdit()
         self.clean_edit.setReadOnly(True)
-        self.clean_edit.setPlaceholderText("아래쪽 — Clean (Gemini 4 31b IT 재작성)")
+        self.clean_edit.setPlaceholderText("아래쪽 — Clean (gemma-4-31b-it 재작성)")
         splitter.addWidget(self.clean_edit)
 
         splitter.setSizes([400, 400])
@@ -184,8 +184,7 @@ class MainWindow:
 
         # ─ 사용법 ─
         usage = QLabel(
-            "Right Ctrl: 받아쓰기 시작/종료 (자동 Paste) | "
-            "Right Shift: 재작성 | "
+            "Right Ctrl: 받아쓰기 시작/종료 (종료 시 Gemma 재작성 후 자동 Paste) | "
             "Ctrl+Z: 마지막 재작성 취소"
         )
         usage.setStyleSheet("color: gray;")

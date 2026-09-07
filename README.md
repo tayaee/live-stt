@@ -67,10 +67,7 @@ notepad gemini-api-keys.txt
 | # | Action | Key |
 |---|---|---|
 | 1 | 받아쓰기 시작 (Start dictation) | **Right Ctrl** |
-| 2 | 받아쓰기 종료 (Stop dictation) | **Right Ctrl** (2nd press) |
-| 3 | 제미나이에게 문장 정리하기 (Cleanup accumulated text via Gemini) | **Right Shift** |
-| 4 | 중간에 정리하기 (Cleanup current buffer mid-dictation) | **Right Shift** |
-| 5 | 보내기 (Send cleaned text to active window) | **Right Ctrl** (2nd press — auto-paste) |
+| 2 | 받아쓰기 종료 + Gemma 재작성 + 자동 입력 (Stop + Rewrite + Paste) | **Right Ctrl** (2nd press) |
 
 Additional: **Ctrl+Z** undo last clean line · **Esc / 종료 버튼** exit daemon.
 
@@ -79,13 +76,15 @@ Additional: **Ctrl+Z** undo last clean line · **Esc / 종료 버튼** exit daem
 ```
 [Microphone] → Gemini Live STT → UI top buffer (raw)
                                        │
-                              Right Shift │ Gemini rewrite
+                        Right Ctrl 2nd │ Transcribed Text to Gemma
                                        ↓
-                              UI bottom buffer (clean)
-                                       │
-                        Right Ctrl 2nd │ SendInput + IME close
+                               Gemma 4 31b IT rewrite
                                        ↓
-                              Active window auto-paste
+                               UI bottom buffer (clean)
+                                       ↓
+                               SendInput + IME close
+                                       ↓
+                               Active window auto-paste
 ```
 
-Two text buffers are always visible: top = raw live transcript, bottom = cleaned text. Right Ctrl toggles dictation on/off; Right Shift rewrites on demand.
+Two text buffers are always visible: top = raw live transcript, bottom = cleaned text. Right Ctrl toggles dictation on/off; stopping dictation automatically sends the raw transcribed text to Gemma for rewriting and pastes it into the active window.
