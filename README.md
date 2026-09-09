@@ -66,8 +66,9 @@ notepad gemini-api-keys.txt
 
 | # | Action | Key |
 |---|---|---|
-| 1 | 받아쓰기 시작 (Start dictation) | **Right Ctrl** |
-| 2 | 받아쓰기 종료 + Gemma 재작성 + 자동 입력 (Stop + Rewrite + Paste) | **Right Ctrl** (2nd press) |
+| 1 | 텍스트 입력 위치에 키보드 포커싱 | 마우스 클릭 |
+| 2 | 받아쓰기 시작 (Start dictation) | **Right Ctrl** |
+| 3 | 받아쓰기 종료 + Gemma 재작성 + 자동 입력 (Stop + Rewrite + Paste) | **Right Ctrl** (2nd press) |
 
 Additional: **Ctrl+Z** undo last clean line · **Esc / 종료 버튼** exit daemon.
 
