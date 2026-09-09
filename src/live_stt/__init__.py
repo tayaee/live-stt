@@ -13,7 +13,4 @@ from __future__ import annotations
 
 import sys
 
-# websockets.speedups C 확장 비활성화 — Tk mainloop 진입 시
-# PyEval_RestoreThread (NULL state) fatal 에러를 유발하는 사례 있음.
-# 이 라인 이전에 websockets가 import 되지 않아야 함.
 sys.modules.setdefault("websockets.speedups", None)  # type: ignore[arg-type]

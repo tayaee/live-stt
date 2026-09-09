@@ -5,11 +5,24 @@ raw transcription 전체와 아래쪽(clean) 버퍼의 마지막 N자를 컨텍�
 
 매 ``rewrite()`` 호출마다 :mod:`.keypool`에서 "rewrite" purpose용 키를
 round-robin으로 1개 소비 (genai.Client 인스턴스도 함께 새로 생성).
+
+호출 방식
+---------
+Google GenAI SDK에서 Gemma 모델은 ``client.chats.create()`` →
+``chat.send_message()`` 패턴으로 호출해야 정상 동작한다. 동일 모델을
+``client.models.generate_content()`` 로 호출하면 서버가 500 INTERNAL을
+반환한다 (참조: ``e:\\src\\gemma-4-31b\\google-ai-chat.py``).
+
+재시도 정책
+-----------
+키 failover는 **HTTP 429 (rate limit)** 에서만 수행한다. 그 외 모든 에러
+(5xx 서버 에러, 4xx 클라이언트 에러, 네트워크 오류 등)는 즉시 raise하여
+상위 호출자(daemon)가 사용자에게 알릴 수 있도록 한다. 의도: 500 INTERNAL이
+모델 과부하/장애로 모든 키에서 동시에 발생해도 무의미한 키 순환을 중단.
 """
 import logging
 
 from google import genai
-from google.genai import types
 
 from .config import GEMINI_REWRITE_MODEL
 from .keypool import get_pool
@@ -34,6 +47,22 @@ Clean up the following raw transcription into natural, fluent Korean sentences. 
 Respond with ONLY the cleaned Korean text. No preamble, no explanation."""
 
 
+def _http_status(exc: BaseException) -> int | None:
+    """google-genai 예외 객체에서 HTTP status code 추출.
+
+    ``APIError`` 계열은 ``code`` 속성에 int status code를 보관. 그 외 예외
+    (네트워크 오류 등)는 ``None``. SDK 버전에 따라 ``status_code``일 수도 있어
+    둘 다 시도.
+    """
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code
+    return None
+
+
 class Rewriter:
     """gemma-4-31b-it에 동기적으로 재작성 요청 (별도 스레드에서 호출 권장).
 
@@ -42,13 +71,16 @@ class Rewriter:
     """
 
     def __init__(self) -> None:
-        # 의도적으로 클라이언트 보관 안 함 — 호출마다 풀에서 키 + 클라이언트 생성
         pass
 
     def rewrite(self, raw: str, clean_tail: str = "", max_retries: int | None = None) -> str:
         """raw 전체 + clean_tail을 받아 재작성된 텍스트 반환 (동기).
 
-        실패 시 키 풀의 다음 키로 round-robin 순회하며 최대 N회 재시도(failover).
+        재시도 정책: 429 (rate limit) 일 때만 다음 키로 failover. 다른 모든
+        에러는 즉시 raise한다.
+
+        호출 방식: Gemma 모델은 ``chats.create()`` → ``send_message()`` 패턴
+        을 사용한다. (``models.generate_content()`` 는 500 INTERNAL을 반환.)
         """
         pool = get_pool()
         if max_retries is None:
@@ -59,7 +91,6 @@ class Rewriter:
             raw=raw,
         )
 
-        last_err: Exception | None = None
         for attempt in range(1, max_retries + 1):
             api_key = pool.next("rewrite")
             key_mask = f"***{api_key[-4:]}" if len(api_key) >= 4 else "***"
@@ -74,28 +105,28 @@ class Rewriter:
                 GEMINI_REWRITE_MODEL,
             )
             try:
-                response = client.models.generate_content(
-                    model=GEMINI_REWRITE_MODEL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    ),
-                )
+                chat = client.chats.create(model=GEMINI_REWRITE_MODEL)
+                response = chat.send_message(prompt)
                 result = (response.text or "").strip()
                 logger.info("Gemma rewrite response (%d chars): %r", len(result), result[:200])
                 return result
             except Exception as e:
-                last_err = e
+                status = _http_status(e)
                 logger.warning(
-                    "Gemma rewrite attempt %d/%d failed with key=%s: %s: %s",
+                    "Gemma rewrite attempt %d/%d failed with key=%s: %s: %s (status=%s)",
                     attempt,
                     max_retries,
                     key_mask,
                     type(e).__name__,
                     e,
+                    status,
                 )
+                if status != 429:
+                    logger.error(
+                        "Gemma rewrite: non-429 error (status=%s) → raising without further retries",
+                        status,
+                    )
+                    raise
 
-        logger.error("Gemma rewrite completely failed after %d attempts", max_retries)
-        if last_err:
-            raise last_err
+        logger.error("Gemma rewrite completely failed after %d attempts (all 429)", max_retries)
         return ""

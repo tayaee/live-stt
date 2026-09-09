@@ -27,14 +27,10 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-# ── 키 파일 경로 상수 ──────────────────────────────────────────────
-# 2순위: 현재 디렉터리
 CWD_KEYS_FILE: Path = Path.cwd() / "gemini-api-keys.txt"
 
-# 3순위: 홈 디렉터리 설정
 HOME_KEYS_FILE: Path = Path.home() / ".config" / "google-ai" / "gemini-api-keys.txt"
 
-# 호출 목적 (전사 / 재작성) — 각각 독립 카운터
 Purpose = Literal["live", "rewrite"]
 
 
@@ -96,7 +92,6 @@ class KeyPool:
         RuntimeError
             세 소스 모두에서 키를 찾지 못한 경우.
         """
-        # 1순위: CLI (CSV) — 명시적이므로 fallback 없이 그 결과로 결정
         if cli_csv is not None:
             keys = _parse_csv_keys(cli_csv)
             if not keys:
@@ -108,14 +103,12 @@ class KeyPool:
             instance._source = f"CLI: --gemini-api-keys ({len(keys)}개)"  # type: ignore[attr-defined]
             return instance
 
-        # 2순위: CWD
         keys = _load_keys_file(CWD_KEYS_FILE)
         if keys:
             instance = cls(keys)
             instance._source = f"CWD: {CWD_KEYS_FILE}"  # type: ignore[attr-defined]
             return instance
 
-        # 3순위: 홈 디렉터리
         keys = _load_keys_file(HOME_KEYS_FILE)
         if keys:
             instance = cls(keys)
@@ -151,7 +144,6 @@ class KeyPool:
         return getattr(self, "_source", "unknown")
 
 
-# ── 모듈 레벨 싱글톤 (지연 초기화, 스레드 안전) ─────────────────────
 _pool: KeyPool | None = None
 _pool_init_lock = threading.Lock()
 

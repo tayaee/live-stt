@@ -22,7 +22,7 @@ from .config import SAMPLE_RATE, CHANNELS, BLOCKSIZE, DTYPE, INT16_MAX
 
 logger = logging.getLogger(__name__)
 
-_FORMAT = pyaudio.paInt16  # 16-bit signed int
+_FORMAT = pyaudio.paInt16
 
 
 def _pyaudio_format(dtype: str) -> int:
@@ -47,7 +47,7 @@ def _rms_to_pct(rms: float) -> int:
     if rms <= 0.0:
         return 0
     ratio = rms / INT16_MAX
-    pct = int(ratio * 10.0 * 100.0)  # 10배 증폭 (시각화용)
+    pct = int(ratio * 10.0 * 100.0)
     if pct < 1 and rms > 0:
         pct = 1
     return max(0, min(100, pct))
@@ -76,11 +76,10 @@ class AudioStream:
 
     def _callback(self, in_data: bytes, _frame_count, _time_info, _status) -> tuple:
         """PyAudio 입력 콜백 (PortAudio 스레드에서 호출)."""
-        # 1) RMS 계산 → 음압 콜백 (가시화용)
         rms = 0.0
         if self.on_level:
             try:
-                n = len(in_data) // 2  # int16 = 2 bytes/sample
+                n = len(in_data) // 2
                 if n > 0:
                     samples = struct.unpack(f"<{n}h", in_data)
                     sumsq = 0
@@ -91,12 +90,10 @@ class AudioStream:
             except BaseException:
                 pass
 
-        # 2) 청크 콜백 (실제 STT 전송용)
         if self.on_chunk:
             try:
                 self.on_chunk(in_data)
             except BaseException:
-                # 콜백 스레드 예외가 PortAudio 내부 상태를 깨지 않도록 흡수
                 pass
         return (None, pyaudio.paContinue)
 
@@ -143,7 +140,6 @@ class AudioStream:
             except Exception:
                 pass
             self._pa = None
-        # 게이지 0으로 (다음 받을 때까지 0 표시)
         if self.on_level:
             try:
                 self.on_level(0)

@@ -16,26 +16,25 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_KEYUP = 0x0002
 
-# ── Win32 시그니처 고정 (64-bit 호환) ────────────────────────────────
 user32.SendInput.argtypes = (
-    wintypes.UINT,    # nInputs
-    ctypes.c_void_p,  # pInput (LPINPUT)
-    ctypes.c_int,     # cbSize
+    wintypes.UINT,
+    ctypes.c_void_p,
+    ctypes.c_int,
 )
 user32.SendInput.restype = wintypes.UINT
 
 imm32.ImmGetContext.argtypes = (wintypes.HWND,)
-imm32.ImmGetContext.restype = wintypes.HANDLE  # HIMC = c_void_p
+imm32.ImmGetContext.restype = wintypes.HANDLE
 
 imm32.ImmNotifyIME.argtypes = (
-    wintypes.HANDLE,  # HIMC
+    wintypes.HANDLE,
     wintypes.DWORD,
     wintypes.DWORD,
     wintypes.DWORD,
 )
 imm32.ImmNotifyIME.restype = wintypes.BOOL
 
-imm32.ImmReleaseContext.argtypes = (wintypes.HWND, wintypes.HANDLE)  # HIMC
+imm32.ImmReleaseContext.argtypes = (wintypes.HWND, wintypes.HANDLE)
 imm32.ImmReleaseContext.restype = wintypes.BOOL
 
 
@@ -92,7 +91,7 @@ def clear_ime(hwnd: int) -> None:
         return
     hIMC = imm32.ImmGetContext(hwnd)
     if hIMC:
-        imm32.ImmNotifyIME(hIMC, 0x11, 0x02, 0)  # IMN_CLOSECANDIDATE
+        imm32.ImmNotifyIME(hIMC, 0x11, 0x02, 0)
         imm32.ImmReleaseContext(hwnd, hIMC)
 
 

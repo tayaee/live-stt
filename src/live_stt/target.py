@@ -9,9 +9,6 @@ from ctypes import wintypes
 
 user32 = ctypes.windll.user32
 
-# ── Win32 시그니처 고정 (64-bit 호환) ────────────────────────────────
-# HWND/HANDLE 등은 64-bit에서 8바이트. argtypes 미설정 시 c_int로 변환되어
-# 큰 hwnd 값에서 OverflowError 가능.
 user32.GetForegroundWindow.argtypes = ()
 user32.GetForegroundWindow.restype = wintypes.HWND
 
@@ -52,7 +49,6 @@ class TargetApp:
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(self.hwnd, ctypes.byref(pid))
         self.pid = pid.value
-        # 윈도우 타이틀 (선택, 디버깅용)
         length = user32.GetWindowTextW(self.hwnd, None, 0)
         if length > 0:
             buf = ctypes.create_unicode_buffer(length + 1)
@@ -75,7 +71,7 @@ class TargetApp:
         user32.AllowSetForegroundWindow(self.pid)
         ok = bool(user32.SetForegroundWindow(self.hwnd))
         if ok:
-            time.sleep(0.05)  # 포커스 전환 안정화
+            time.sleep(0.05)
         return ok
 
     def __repr__(self) -> str:

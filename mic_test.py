@@ -30,7 +30,7 @@ def main() -> int:
     print("=" * 60)
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
-        if info["maxInputChannels"] > 0:  # 입력 가능한 것만
+        if info["maxInputChannels"] > 0:
             print(
                 f"  [{i:2d}] in={info['maxInputChannels']:>2} "
                 f"{info['name']}  (host={info['hostApi']})"

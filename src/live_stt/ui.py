@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# ── 모듈 레벨 QApplication 싱글톤 ────────────────────────────────
 _app: Optional[QApplication] = None
 
 
@@ -54,20 +53,15 @@ def _qapp() -> QApplication:
     return _app  # type: ignore[return-value]
 
 
-# ── 음압 게이지 색상 헬퍼 ────────────────────────────────────────
 def _level_color(value: int) -> str:
     """값(0~100)에 따라 녹→황→적 색상 코드를 반환 (QProgressBar 용)."""
     if value < 60:
-        return "#4caf50"  # green
+        return "#4caf50"
     if value < 80:
-        return "#ff9800"  # orange
-    return "#f44336"      # red
+        return "#ff9800"
+    return "#f44336"
 
 
-# ── 스레드 간 안전한 UI 갱신 ────────────────────────────────
-# PySide6 native Signal/Slot 으로 cross-thread dispatch 가 이 환경에서
-# 조용히 실패하는 현상이 관측됨 ( ``[ui-disp]`` 로그도 안 찍힘 ).
-# → 더 안정적 패턴: Python ``queue.Queue`` 를 메인 스레드의 QTimer 로 polling.
 import queue as _queue
 
 _invoke_queue: "_queue.Queue[tuple]" = _queue.Queue()
@@ -119,10 +113,8 @@ class MainWindow:
     """PySide6 메인 윈도우. tkinter 버전과 동일한 public API."""
 
     def __init__(self) -> None:
-        qt_app = _qapp()  # mainloop 시작 전에 호출되어도 안전
+        qt_app = _qapp()
 
-        # main thread 에서 queue-polling QTimer 시작
-        # (이후 어느 스레드에서 ``schedule(...)`` 호출되어도 메인 스레드 컨텍스트에서 실행)
         _start_pump_once()
 
         self._window = QMainWindow()
@@ -133,7 +125,6 @@ class MainWindow:
         self._window.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # ─ 상단 컨트롤 바 ─
         control = QHBoxLayout()
         control.addWidget(QLabel("단축키:"))
         control.addWidget(QLabel("Right Ctrl (시작/종료)"))
@@ -143,10 +134,8 @@ class MainWindow:
         control.addStretch()
         root.addLayout(control)
 
-        # ─ 본문: [음압 게이지 | 위/아래 2버퍼] ─
         body = QHBoxLayout()
 
-        # 세로 음압 게이지 (왼쪽)
         self.level_bar = QProgressBar()
         self.level_bar.setOrientation(Qt.Vertical)
         self.level_bar.setRange(0, 100)
@@ -157,7 +146,6 @@ class MainWindow:
             "QProgressBar { border: 1px solid #888; background: #222; border-radius: 2px; }"
             "QProgressBar::chunk { background-color: #4caf50; }"
         )
-        # 게이지 라벨 (M / 0..100)
         level_col = QVBoxLayout()
         level_col.setContentsMargins(0, 0, 0, 0)
         level_col.setSpacing(2)
@@ -165,7 +153,6 @@ class MainWindow:
         level_col.addWidget(self.level_bar, stretch=1)
         body.addLayout(level_col)
 
-        # 위/아래 2버퍼 (QSplitter, drag 로 분할 변경 가능)
         splitter = QSplitter(Qt.Vertical)
 
         self.raw_edit = QPlainTextEdit()
@@ -182,7 +169,6 @@ class MainWindow:
         body.addWidget(splitter, stretch=1)
         root.addLayout(body, stretch=1)
 
-        # ─ 사용법 ─
         usage = QLabel(
             "Right Ctrl: 받아쓰기 시작/종료 (종료 시 Gemma 재작성 후 자동 Paste) | "
             "Ctrl+Z: 마지막 재작성 취소"
@@ -190,23 +176,19 @@ class MainWindow:
         usage.setStyleSheet("color: gray;")
         root.addWidget(usage)
 
-        # ─ 종료 ─
         self.quit_btn = QPushButton("종료")
         self.quit_btn.clicked.connect(self._on_quit)
         root.addWidget(self.quit_btn)
 
-        # ─ 키 단축키 ─
         QShortcut(QKeySequence("Ctrl+Z"), self._window, activated=self.undo_last_clean)
         QShortcut(QKeySequence("Escape"), self._window, activated=self._on_quit)
 
         self._on_quit_callback: Optional[Callable[[], None]] = None
         self._window.closeEvent = self._on_close_event  # type: ignore[method-assign]
 
-        # UI 요소가 다 만들어진 후에 show (다른 스레드에서 호출되면 안 되지만 안전용)
         self._window.show()
-        qt_app.processEvents()  # 즉시 paint 가 적용되도록
+        qt_app.processEvents()
 
-    # ── 라이프사이클 ─
     def run(self) -> None:
         """QApplication mainloop 진입 (블로킹). Qt의 표준 진입점."""
         sys.exit(_qapp().exec())
@@ -214,11 +196,9 @@ class MainWindow:
     def quit(self) -> None:
         _qapp().quit()
 
-    # ── 콜백 등록 ─
     def set_quit_callback(self, callback: Callable[[], None]) -> None:
         self._on_quit_callback = callback
 
-    # ── UI 업데이트 (메인 스레드에서 호출되어야 함) ─
     def set_status(self, text: str) -> None:
         self.status_label.setText(text)
 
@@ -227,7 +207,6 @@ class MainWindow:
 
     def append_raw(self, text: str) -> None:
         logger.info("append_raw: %r", text)
-        # QPlainTextEdit.appendPlainText 는 항상 새 줄로 시작 → cursor 이동으로 동일 효과
         cursor = self.raw_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(text)
@@ -274,12 +253,9 @@ class MainWindow:
         if len(lines) > 1:
             self.clean_edit.setPlainText("\n".join(lines[:-1]))
 
-    # ── 음압 게이지 (PortAudio 스레드에서 호출) ─
     def set_level(self, pct: int) -> None:
         """음압(0~100) 설정. 메인 스레드에서 호출되어야 함 (schedule 경유 권장)."""
         pct = max(0, min(100, pct))
-        # 너무 빈번하면 console 잠수. 5% 단위로 양자화.
-        # print는 첫 감지시에만.
         if not hasattr(self, "_last_logged_pct") or abs(pct - self._last_logged_pct) >= 5:
             logger.debug("set_level: %d", pct)
             self._last_logged_pct = pct
@@ -290,7 +266,6 @@ class MainWindow:
             f"QProgressBar::chunk {{ background-color: {_level_color(pct)}; }}"
         )
 
-    # ── 스레드 안전 ─
     def schedule(self, func: Callable, *args) -> None:
         """다른 스레드에서 호출 가능 — main thread 에서 ``func(*args)`` 실행.
 
@@ -302,7 +277,6 @@ class MainWindow:
         """
         schedule(func, *args)
 
-    # ── 내부 ─
     def _on_quit(self) -> None:
         if self._on_quit_callback:
             try:

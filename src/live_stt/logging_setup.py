@@ -22,10 +22,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-# 프로젝트 루트 / logs 디렉토리. ``live_stt/`` 의 부모 디렉토리.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _LOGS_DIR = _PROJECT_ROOT / "logs"
 _APP_LOG = _LOGS_DIR / "app.log"
+
 
 _FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-5s [%(name)s] %(message)s"
 _DATEFMT = "%H:%M:%S"
@@ -42,7 +42,6 @@ def setup_logging(level: int = logging.INFO) -> None:
     """
     _LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 매 실행 시 app.log 비우기. 이전 로그 보존 안 함.
     if _APP_LOG.exists():
         try:
             _APP_LOG.unlink()
@@ -50,17 +49,15 @@ def setup_logging(level: int = logging.INFO) -> None:
             pass
 
     root = logging.getLogger()
-    # 기존 핸들러 제거 (중복 방지)
     for h in list(root.handlers):
         root.removeHandler(h)
     root.setLevel(level)
 
     formatter = logging.Formatter(_FORMAT, datefmt=_DATEFMT)
 
-    # ── 파일 핸들러: 매 실행 truncate ─
     file_handler = RotatingFileHandler(
         _APP_LOG,
-        maxBytes=10 * 1024 * 1024,  # 10 MB (백업 없음; 새 실행 시 위에서 unlink)
+        maxBytes=10 * 1024 * 1024,
         backupCount=0,
         encoding="utf-8",
     )
@@ -68,24 +65,19 @@ def setup_logging(level: int = logging.INFO) -> None:
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 
-    # ── Stderr 핸들러: 라이브 진행 상황 ─
     stderr_handler = logging.StreamHandler(stream=sys.stderr)
     stderr_handler.setLevel(level)
     stderr_handler.setFormatter(formatter)
     root.addHandler(stderr_handler)
 
-    # ── 외부 라이브러리 로그 정리 ─
-    # google-genai 는 매우 시끄러움
     logging.getLogger("google").setLevel(logging.WARNING)
     logging.getLogger("google.genai").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
 
-    # 우리 모듈은 INFO 유지
     logging.getLogger("live_stt").setLevel(level)
 
-    # setup 자체도 한 줄
     logging.getLogger(__name__).info(
         "logging initialized → %s (cwd=%s)", _APP_LOG, os.getcwd()
     )

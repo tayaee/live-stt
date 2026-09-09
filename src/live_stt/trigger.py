@@ -16,17 +16,13 @@ user32 = ctypes.windll.user32
 WH_KEYBOARD_LL = 13
 WM_KEYDOWN = 0x0100
 
-# ── Win32 함수 시그니처 고정 (64-bit 호환) ───────────────────────────
-# HHOOK, LRESULT, LPARAM 등은 64-bit에서 8바이트. argtypes 미설정 시
-# ctypes 기본값 (c_int, 4바이트) 로 변환 시도 → OverflowError.
-# (wintypes에 LRESULT는 없으므로 c_longlong로 직접 지정.)
-_LRESULT = ctypes.c_longlong  # LRESULT = LONG_PTR = 64-bit on x64
+_LRESULT = ctypes.c_longlong
 
 user32.SetWindowsHookExW.argtypes = (
-    ctypes.c_int,        # idHook
-    ctypes.c_void_p,     # lpfn  (HOOKPROC)
-    wintypes.HINSTANCE,  # hMod
-    wintypes.DWORD,      # dwThreadId
+    ctypes.c_int,
+    ctypes.c_void_p,
+    wintypes.HINSTANCE,
+    wintypes.DWORD,
 )
 user32.SetWindowsHookExW.restype = wintypes.HHOOK
 
@@ -46,13 +42,12 @@ class TriggerHook:
     """Right Ctrl 단축키 hook (시작/종료 토글)."""
 
     def __init__(self, on_ctrl=None) -> None:
-        self.on_ctrl = on_ctrl  # callable: Right Ctrl 누를 때 호출
+        self.on_ctrl = on_ctrl
         self._hook_id: int = 0
-        self._proc = None  # 콜백 참조 유지 (GC 방지)
+        self._proc = None
 
     def install(self) -> int:
         """Hook 설치. 메인 GUI 스레드에서 호출해야 함."""
-        # lParam은 64-bit 포인터이므로 LPARAM (c_void_p) 으로 받음
         CMPFUNC = ctypes.WINFUNCTYPE(
             _LRESULT,
             ctypes.c_int,
@@ -63,8 +58,8 @@ class TriggerHook:
         self._hook_id = user32.SetWindowsHookExW(
             WH_KEYBOARD_LL,
             self._proc,
-            None,  # hMod (low-level hook은 0)
-            0,  # dwThreadId (0 = 모든 스레드)
+            None,
+            0,
         )
         if not self._hook_id:
             err = ctypes.get_last_error() or 0
@@ -79,14 +74,13 @@ class TriggerHook:
             self._proc = None
 
     def _callback(self, n_code, w_param, l_param):
-        # lParam은 KBDLLHOOKSTRUCT 포인터. vkCode가 첫 DWORD.
         if n_code == 0 and w_param == WM_KEYDOWN and l_param:
             vk = ctypes.cast(l_param, ctypes.POINTER(wintypes.DWORD))[0]
             if vk == VK_RCONTROL and self.on_ctrl:
                 try:
                     self.on_ctrl()
                 except BaseException:
-                    pass  # 콜백 예외는 hook 체인 끊김 방지
+                    pass
         try:
             return user32.CallNextHookEx(self._hook_id, n_code, w_param, l_param)
         except BaseException:

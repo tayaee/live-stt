@@ -66,7 +66,7 @@ class LiveTranscriber:
         self._config = types.LiveConnectConfig(
             response_modalities=["TEXT"],
             input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=[],  # 자동 감지
+                language_codes=[],
             ),
         )
 
@@ -108,16 +108,12 @@ class LiveTranscriber:
         """Finalize 스트림 신호 → tasks cancel → running=False."""
         if not self._running and self.session is None:
             return
-        # 1) finalize: audio 끝났음을 서버에 전달
         if self.session is not None:
             try:
                 await self.session.send_realtime_input(audio_stream_end=True)
             except Exception:
                 pass
-        # 2) 마지막 잔여 패킷 수신을 위한 최소 대기 (0.15초)
         await asyncio.sleep(0.15)
-        # 3) 송수신 태스크 명시적 cancel — 그렇지 않으면 루프 종료 시
-        #    "Task was destroyed but it is pending!" 경고 발생.
         for task_attr in ("_send_task", "_recv_task"):
             task: Optional[asyncio.Task] = getattr(self, task_attr, None)
             if task is not None and not task.done():
@@ -130,9 +126,7 @@ class LiveTranscriber:
                     pass
         self._send_task = None
         self._recv_task = None
-        # 4) running flag — _setup_and_run 의 while 루프 종료
         self._running = False
-        # 5) 세션 close 는 _setup_and_run.finally 의 cm.__aexit__ 가 처리
 
     def _thread_main(self) -> None:
         """전용 스레드 entrypoint."""
@@ -177,7 +171,7 @@ class LiveTranscriber:
             self._running = True
             self._send_task = asyncio.create_task(self._send_loop())
             self._recv_task = asyncio.create_task(self._recv_loop())
-            self._ready.set()  # 메인 스레드 해제
+            self._ready.set()
             logger.info("enter run loop (waiting on _running)")
             while self._running:
                 await asyncio.sleep(0.05)
@@ -235,26 +229,22 @@ class LiveTranscriber:
                 sc = response.server_content
                 interim = sc.interim_input_transcription.text if (sc and sc.interim_input_transcription is not None) else None
                 final = sc.input_transcription.text if (sc and sc.input_transcription is not None) else None
-                # 모든 응답을 찍어 모델이 진짜 침묵인지 / 응답 형태가 예상과 다른지 확인
                 if recv_count <= 3 or interim or final or recv_count % 20 == 0:
                     logger.info(
                         "recv #%d sc=%r interim=%r final=%r",
                         recv_count, sc, interim, final,
                     )
                     if recv_count == 1:
-                        # 첫 응답은 전체 dump
                         logger.info("FULL first response: %r", response)
                         try:
                             logger.info("FULL type: %s", type(response).__name__)
                         except Exception:
                             pass
-                # Interim (저지연 부분 결과) — UI 덮어쓰기
                 if interim and self.on_interim:
                     try:
                         self.on_interim(interim)
                     except Exception:
                         pass
-                # Final (최종 확정) — UI append
                 if final and self.on_text:
                     try:
                         self.on_text(final)
@@ -264,7 +254,6 @@ class LiveTranscriber:
             logger.info("recv_loop cancelled (got %d responses)", recv_count)
         except Exception as e:
             err_str = str(e)
-            # WebSocket 정상 close 는 에러로 raise 됨 (APIError 1000) — 정상 종료
             if "1000" in err_str or "ConnectionClosedOK" in err_str:
                 logger.info(
                     "recv_loop: connection closed normally (%d responses)",

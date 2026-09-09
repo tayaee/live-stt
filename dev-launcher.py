@@ -42,8 +42,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
 
-    # live_stt 패키지가 import 경로에 있어야 함
-    # (uv run은 PEP 723 deps만 격리, src/live_stt는 PYTHONPATH로 노출 가정)
     try:
         from live_stt.keypool import init_pool
     except ImportError:

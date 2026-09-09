@@ -68,13 +68,11 @@ class Daemon:
 
         self.is_listening = False
         self.transcriber: Optional["LiveTranscriber"] = None
-        self.rewriter: Optional["Rewriter"] = None  # lazy
+        self.rewriter: Optional["Rewriter"] = None
 
-        # 위쪽 버퍼 실시간 누적 관리
         self._committed_texts: list[str] = []
         self._current_interim: str = ""
 
-        # 침묵 감지 자동 재작성 (틈틈이 rewrite) 관리
         self._last_rewritten_raw: str = ""
         self._last_rewritten_clean: str = ""
         self._rewrite_timer: Optional[threading.Timer] = None
@@ -83,22 +81,18 @@ class Daemon:
 
         self.ui.set_quit_callback(self._shutdown)
 
-    # ── 라이프사이클 ─
     def start(self) -> None:
         """전체 데몬 시작. 메인 스레드에서 호출.
 
         이 시점에 google.genai는 아직 import되지 않음 → cffi/websockets.speedups
         미로드 상태에서 tkinter mainloop 진입.
         """
-        # 1) 키보드 hook 설치 (메인 스레드)
         try:
             self.trigger.install()
         except RuntimeError as e:
             logger.error("Hook Error: %s", e)
             self.ui.set_status(f"⚠ Hook 실패: {e}")
-            # 그래도 UI는 살아있게 (사용자가 직접 종료 가능)
 
-        # 2) UI 시작 (메인 스레드 블로킹). 종료 시 _shutdown 자동 호출.
         self.ui.set_status("대기 중 — Right Ctrl로 시작")
         self.ui.run()
 
@@ -121,8 +115,7 @@ class Daemon:
                 except Exception:
                     pass
 
-    # ── 콜백 (hook / sounddevice / LiveTranscriber 스레드에서 호출) ─
-    def _on_audio_chunk(self, chunk: bytes) -> None:
+        def _on_audio_chunk(self, chunk: bytes) -> None:
         """sounddevice 콜백 스레드에서 호출."""
         if self.transcriber:
             self.transcriber.enqueue_audio(chunk)
@@ -133,7 +126,6 @@ class Daemon:
 
     def _on_ctrl_pressed(self) -> None:
         """Right Ctrl — 토글 (hook 콜백, 메인 스레드)."""
-        # mainloop 안에서 호출되지만 안전을 위해 schedule
         self.ui.schedule(self._toggle_listening)
 
     def _get_current_raw_text(self) -> str:
@@ -148,13 +140,11 @@ class Daemon:
         logger.info("_on_live_text (final): %r", text)
         if not text:
             return
-        # 문장 확정 -> 누적 리스트에 영구 보존
         self._committed_texts.append(text.strip())
         self._current_interim = ""
         full_text = self._get_current_raw_text()
         self.ui.schedule(self.ui.set_raw, full_text)
 
-        # 한 문장 발화가 끝났으므로 침묵 딜레이 타이머 가동
         self._reset_rewrite_timer()
 
     def _on_live_interim(self, text: str) -> None:
@@ -164,11 +154,9 @@ class Daemon:
         full_text = self._get_current_raw_text()
         self.ui.schedule(self.ui.set_raw, full_text)
 
-        # 사용자가 계속 말하는 중이므로 침묵 딜레이 타이머 리셋
         self._reset_rewrite_timer()
 
-    # ── 침묵 딜레이 자동 재작성 (틈틈이 rewrite) ─
-    def _reset_rewrite_timer(self) -> None:
+        def _reset_rewrite_timer(self) -> None:
         """발화 중단(침묵) 감지 타이머 재설정."""
         if not self.is_listening:
             return
@@ -194,7 +182,6 @@ class Daemon:
         raw_all = self._get_current_raw_text().strip()
         if not raw_all:
             return
-        # 이미 이전에 재작성된 내용과 같거나, 현재 재작성 중이면 스킵
         if raw_all == self._last_rewritten_raw or self._is_rewriting:
             return
 
@@ -218,7 +205,7 @@ class Daemon:
             self._is_rewriting = True
         try:
             self.ui.schedule(self.ui.set_status, "✍️ Gemma 틈틈이 재작성 중...")
-            from .rewrite import Rewriter  # lazy
+            from .rewrite import Rewriter
             if self.rewriter is None:
                 self.rewriter = Rewriter()
 
@@ -235,8 +222,7 @@ class Daemon:
             if self.is_listening:
                 self.ui.schedule(self.ui.set_status, "🔴 받아쓰기 진행 중")
 
-    # ── 메인 로직 (메인 스레드에서 실행) ─
-    def _toggle_listening(self) -> None:
+        def _toggle_listening(self) -> None:
         logger.info("toggle_listening (was listening=%s)", self.is_listening)
         if self.is_listening:
             self._stop_listening()
@@ -294,13 +280,11 @@ class Daemon:
         self.is_listening = False
         self._cancel_rewrite_timer()
 
-        # 1) 마이크 정리 (오디오 입력 즉시 중단)
         try:
             self.audio.stop()
         except Exception:
             pass
 
-        # 2) Gemini Live 종료
         if self.transcriber:
             logger.info("transcriber.stop()")
             try:
@@ -309,12 +293,10 @@ class Daemon:
                 pass
         self.transcriber = None
 
-        # 3) 잔여 발화가 있으면 commit 처리
         if self._current_interim.strip():
             self._committed_texts.append(self._current_interim.strip())
             self._current_interim = ""
 
-        # 4) 지금까지 받아써진 전체 텍스트 확정
         raw_all = self._get_current_raw_text().strip()
         self.ui.schedule(self.ui.set_raw, raw_all)
         logger.info("dictation stopped, total transcribed raw text: %r", raw_all)
@@ -323,7 +305,6 @@ class Daemon:
             self.ui.set_status("⏹️ 받아쓰기 종료 — 대기 중 (인식된 텍스트 없음)")
             return
 
-        # 5) 이미 틈틈이 rewrite된 결과가 최신 raw_all과 일치하면 즉시 Paste!
         if raw_all == self._last_rewritten_raw and self._last_rewritten_clean:
             logger.info(
                 "Already rewritten by periodic task, pasting immediately (%d chars)",
@@ -332,22 +313,19 @@ class Daemon:
             self._paste_text(self._last_rewritten_clean)
             return
 
-        # 6) 최신 내용이 아직 rewrite되지 않은 경우 -> 최종 rewrite 후 Paste
         self.ui.set_status("✍️ Gemma 최종 재작성 중...")
 
         def _final_rewrite_and_paste() -> None:
-            # 진행 중인 periodic rewrite 작업이 있다면 완료 대기
             while self._is_rewriting:
                 import time
                 time.sleep(0.1)
 
-            # 대기 완료 후 이미 갱신되었는지 확인
             if raw_all == self._last_rewritten_raw and self._last_rewritten_clean:
                 self._paste_text(self._last_rewritten_clean)
                 return
 
             try:
-                from .rewrite import Rewriter  # lazy
+                from .rewrite import Rewriter
                 if self.rewriter is None:
                     self.rewriter = Rewriter()
 
@@ -405,14 +383,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """진입점."""
-    # 로깅 셋업 (매 실행 시 logs/app.log truncate)
     from .logging_setup import setup_logging
     setup_logging()
 
     args = _parse_args(argv)
     logger.info("live-stt starting (argv=%s)", sys.argv)
 
-    # 키 풀 초기화 (CLI 옵션 반영). 실패 시 여기서 예외로 종료.
     init_pool(cli_csv=args.gemini_api_keys)
 
     daemon = Daemon()
