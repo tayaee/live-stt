@@ -115,8 +115,7 @@ class Daemon:
                 except Exception:
                     pass
 
-        def _on_audio_chunk(self, chunk: bytes) -> None:
-        """sounddevice 콜백 스레드에서 호출."""
+    def _on_audio_chunk(self, chunk: bytes) -> None:
         if self.transcriber:
             self.transcriber.enqueue_audio(chunk)
 
@@ -156,8 +155,8 @@ class Daemon:
 
         self._reset_rewrite_timer()
 
-        def _reset_rewrite_timer(self) -> None:
-        """발화 중단(침묵) 감지 타이머 재설정."""
+    def _reset_rewrite_timer(self) -> None:
+        """Reset the silence-detection rewrite timer."""
         if not self.is_listening:
             return
         if self._rewrite_timer is not None:
@@ -222,7 +221,7 @@ class Daemon:
             if self.is_listening:
                 self.ui.schedule(self.ui.set_status, "🔴 받아쓰기 진행 중")
 
-        def _toggle_listening(self) -> None:
+    def _toggle_listening(self) -> None:
         logger.info("toggle_listening (was listening=%s)", self.is_listening)
         if self.is_listening:
             self._stop_listening()
